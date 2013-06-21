@@ -210,24 +210,26 @@ class CopyableBehavior extends ModelBehavior {
 			return $record;
 		}
 		foreach ($Model->hasAndBelongsToMany as $key => $val) {
-			if (!isset($record[$val['className']]) || empty($record[$val['className']])) {
+			$className = pluginSplit($val['className']);
+			$className = $className[1];
+			if (!isset($record[$className]) || empty($record[$className])) {
 				continue;
 			}
 
-			$joinInfo = Set::extract($record[$val['className']], '{n}.' . $val['with']);
+			$joinInfo = Set::extract($record[$className], '{n}.' . $val['with']);
 			if (empty($joinInfo)) {
 				continue;
 			}
-
+			
 			foreach ($joinInfo as $joinKey => $joinVal) {
 				$joinInfo[$joinKey] = $this->_stripFields($Model, $joinVal);
-
+				
 				if (array_key_exists($val['foreignKey'], $joinVal)) {
 					unset($joinInfo[$joinKey][$val['foreignKey']]);
 				}
 			}
-
-			$record[$val['className']] = $joinInfo;
+			
+			$record[$className] = $joinInfo;
 		}
 
 		return $record;
