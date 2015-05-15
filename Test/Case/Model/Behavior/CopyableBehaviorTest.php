@@ -812,12 +812,16 @@ class CopyableBehaviorTest extends CakeTestCase {
 		);
 
 		$customSettings = array(
-			'inject' => array(
+			'merge' => array(
 				'Article' => array(
 					'title' => 'INJECT changed this',
 					'published' => 'X',
 				)
-			)
+			),
+			'insert' => array(
+				'Comment.{n}.user_id' => 0,
+				'Comment.{n}.comment' => 'INJECT changed via Hash::insert()',
+			),
 		);
 		$result = $this->Article->copy(1, $customSettings);
 		$this->assertTrue($result);
@@ -868,9 +872,14 @@ class CopyableBehaviorTest extends CakeTestCase {
 			)
 		));
 
-		// Inject changed expectations
-		$expected['Article']['title'] = $customSettings['inject']['Article']['title'];
-		$expected['Article']['published'] = $customSettings['inject']['Article']['published'];
+		// Inject changed expectations via Hash::merge()
+		$expected['Article']['title'] = $customSettings['merge']['Article']['title'];
+		$expected['Article']['published'] = $customSettings['merge']['Article']['published'];
+		// Inject changed expectations via Hash::insert()
+		foreach ($expected['Comment'] as $i => $data) {
+			$expected['Comment'][$i]['user_id'] = $customSettings['insert']['Comment.{n}.user_id'];
+			$expected['Comment'][$i]['comment'] = $customSettings['insert']['Comment.{n}.comment'];
+		}
 		$this->_assertArticleAfterCopy($result, $expected);
 	}
 

@@ -85,6 +85,7 @@ You can pass in any and all settings at runtime like so:
 $settings = array(
 	'contain' => array('Foo', 'Foo.Bar'),
 	'saveAllOptions' => array('deep' => true, 'atomic' => true, 'validate' => true, 'callbacks' => false),
+	'stripFields' => array('id', 'created', 'modified', 'updated', 'my_unique_field')
 );
 if (!$this->MyModel->copy($id, $settings)) {
 	throw new CakeException("Unable to copy {$this->MyModel->alias} #{$id} with custom settings");
@@ -92,21 +93,35 @@ if (!$this->MyModel->copy($id, $settings)) {
 $newId = $this->MyModel->id;
 ```
 
-You can also pass in an `inject` setting, which will overwrite values after
+You can also pass in *inject setting*,
+which will overwrite values after
 `copyPrepareData()` but before `copySaveAll()`
 
 This is great if you want to default/change your data for the `copy()` but don't
 want to have to edit after the copy... (important for unique fields)
 
+
+We support two types of injections:
+
+* `merge` uses `Hash::merge()` to merge / overwrite basic nested arrays
+  (simple, but doesn't work great for hasMany records)
+* `insert` uses `Hash::insert()` to overwrite every instance matching a path
+  (great for hasMany records)
+
 ```
 $settings = array(
-	'inject' => array(
+	'merge' => array(
 		'MyModel' => array(
 			'unique_field' => 'newValue',
 			'parent_id' => $id,
 			'copied_on' => date('Y-m-d H:i:s'),
 			'copied_by' => $user_id,
 		)
+	),
+	'insert' => array(
+		'MyHasManyChild.{n}.field1' => null,
+		'MyHasManyChild.{n}.copied_on' => date('Y-m-d H:i:s'),
+		'MyHasManyChild.{n}.copied_by' => $user_id,
 	)
 );
 if (!$this->MyModel->copy($id, $settings)) {
@@ -116,20 +131,17 @@ $newId = $this->MyModel->id;
 ```
 
 
-### Primary Public Method:
+### Public Methods:
 
 ```
-*   copy($id, $settings)   --> $saved
-```
-
-
-### Secondary Public Methods:
-
-```
-*   copyGenerateContain()  --> $contain (from settings, or generated)
-*   copyFindData($id)      --> $data    (find first w/ contains)
-*   copyPrepareData($data) --> $data    (convert data w/o foreignKey/stripFields)
-*   copySaveAll($data)     --> $saved   (do saveAll and update masterKey)
+ * Primary Public Method:
+ *   copy($id, $settings)     --> $saved
+ *
+ * Secondary Public Methods:
+ *   copyGenerateContain()    --> $contain (from settings, or generated)
+ *   copyFindData($id)        --> $record    (find first w/ contains)
+ *   copyPrepareData($record) --> $record    (convert data w/o foreignKey/stripFields)
+ *   copySaveAll($record)     --> $saved   (do saveAll and update masterKey)
 ```
 
 ## Background Information

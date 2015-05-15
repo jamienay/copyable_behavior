@@ -18,13 +18,13 @@
  *   $this->MyModel->copy($id);
  *
  * Primary Public Method:
- *   copy($id, $settings)   --> $saved
+ *   copy($id, $settings)     --> $saved
  *
  * Secondary Public Methods:
- *   copyGenerateContain()  --> $contain (from settings, or generated)
- *   copyFindData($id)      --> $data    (find first w/ contains)
- *   copyPrepareData($data) --> $data    (convert data w/o foreignKey/stripFields)
- *   copySaveAll($data)     --> $saved   (do saveAll and update masterKey)
+ *   copyGenerateContain()    --> $contain (from settings, or generated)
+ *   copyFindData($id)        --> $record    (find first w/ contains)
+ *   copyPrepareData($record) --> $record    (convert data w/o foreignKey/stripFields)
+ *   copySaveAll($record)     --> $saved   (do saveAll and update masterKey)
  *
  * @filesource
  * @author			Jamie Nay
@@ -42,15 +42,19 @@ class CopyableBehavior extends ModelBehavior {
 /**
  * Default values for settings.
  *
+ * - contain: contain part of options for find first (optional, if empty, generates)
  * - recursive: whether to copy hasMany and hasOne records
  * - habtm: whether to copy hasAndBelongsToMany associations
  * - stripFields: fields to strip during copy process
  * - ignore: aliases of any associations that should be ignored, using dot (.) notation.
- * - contain: contain part of options for find first (optional, if empty, generates)
+ * - merge: value to be merged into data via Hash::merge()
+ * - insert: array of path => value to be merged into data via Hash::insert()
  * - saveAllOptions: options for saveAll()
  * - masterKey: if set to a field, will update all records with the new id
+ * - quiet: if true, catches Exception and fail silently (returns false)
  */
 	protected $_defaults = array(
+		'contain' => array(),
 		'recursive' => true,
 		'habtm' => true,
 		'stripFields' => array(
@@ -61,12 +65,14 @@ class CopyableBehavior extends ModelBehavior {
 			'rght'
 		),
 		'ignore' => array(),
-		'contain' => array(),
+		'merge' => array(),
+		'insert' => array(),
 		'saveAllOptions' => array(
 			'validate' => false,
 			'deep' => true
 		),
-		'masterKey' => null
+		'masterKey' => null,
+		'quiet' => false,
 	);
 
 /**
@@ -124,7 +130,9 @@ class CopyableBehavior extends ModelBehavior {
 		// prepare / convert data
 		$record = $this->copyPrepareData($Model, $record);
 
-		// prepare / inject data
+		// prepare / overwrite data
+		// - inject or merge or hash::merge --> Hash::merge()
+		// - insert or hash::insert --> Hash::insert()
 		$record = $this->_copyInjectData($Model, $record, $settings);
 
 		// stash a copy of this record after prepare
@@ -307,28 +315,28 @@ class CopyableBehavior extends ModelBehavior {
  * from a single hasOne and hasMany records.
  *
  * @param object $Model model object
- * @param array $data
+ * @param array $record
  * @param string $alias of the child Model
  * @param array $config of the Association
- * @return array $data
+ * @return array $record
  */
-	protected function _convertChild(Model $Model, $data, $alias, $config) {
-		$data = $this->_stripFields($Model, $data);
+	protected function _convertChild(Model $Model, $record, $alias, $config) {
+		$record = $this->_stripFields($Model, $record);
 
-		if (isset($data[$config['foreignKey']])) {
-			unset($data[$config['foreignKey']]);
+		if (isset($record[$config['foreignKey']])) {
+			unset($record[$config['foreignKey']]);
 		}
 
-		$data = $this->copyPrepareData($Model->{$alias}, $data);
+		$record = $this->copyPrepareData($Model->{$alias}, $record);
 
 		// is this completely empty (contains only empty values)?
 		//   if so, strip...
-		$filtered = Hash::filter($data);
+		$filtered = Hash::filter($record);
 		if (empty($filtered)) {
 			return [];
 		}
 
-		return $data;
+		return $record;
 	}
 
 /**
@@ -380,11 +388,31 @@ class CopyableBehavior extends ModelBehavior {
  * @return array $record
  */
 	protected function _copyInjectData(Model $Model, $record, $settings) {
-		if (empty($settings['inject']) || !is_array($settings['inject'])) {
-			return $record;
+
+		// merge in possible configured overrides Hash::merge()
+		if (!empty($settings['inject'])) {
+			$record = Hash::merge($record, $settings['inject']);
+		}
+		if (!empty($settings['merge'])) {
+			$record = Hash::merge($record, $settings['merge']);
+		}
+		if (!empty($settings['hash::merge'])) {
+			$record = Hash::merge($record, $settings['hash::merge']);
 		}
 
-		return Hash::merge($record, $settings['inject']);
+		// merge in possible configured overrides Hash::insert()
+		if (!empty($settings['insert'])) {
+			foreach ($settings['insert'] as $path => $values) {
+				$record = Hash::insert($record, $path, $values);
+			}
+		}
+		if (!empty($settings['hash::insert'])) {
+			foreach ($settings['hash::insert'] as $path => $values) {
+				$record = Hash::insert($record, $path, $values);
+			}
+		}
+
+		return $record;
 	}
 
 /**
@@ -484,7 +512,18 @@ class CopyableBehavior extends ModelBehavior {
 	public function copySaveAll(Model $Model, $record) {
 		$settings = $this->settings($Model);
 		$Model->create();
-		$saved = $Model->saveAll($record, $settings['saveAllOptions']);
+		try {
+			$saved = $Model->saveAll(
+				$record,
+				$settings['saveAllOptions']
+			);
+		} catch (Exception $e) {
+			$this->log('Copyable copySaveAll Exception: ' . $e->getMessage());
+			if (!empty($settings['quiet'])) {
+				return false;
+			}
+			throw $e;
+		}
 		$id = $Model->id;
 
 		if ($settings['masterKey']) {
