@@ -5,7 +5,7 @@
  * Adds ability to copy a model record, including all hasMany and hasAndBelongsToMany
  * associations. Relies on Containable behavior, which this behavior will attach
  * on the fly as needed.
- * 
+ *
  * HABTM relationships are just duplicated in the join table, while hasMany and hasOne
  * records are recursively copied as well.
  *
@@ -47,15 +47,15 @@ class CopyableBehavior extends ModelBehavior {
  * will look in the $this->contain array.
  */
 	protected $_defaults = array(
-		'recursive' => true, 
-		'habtm' => true, 
+		'recursive' => true,
+		'habtm' => true,
 		'stripFields' => array(
-			'id', 
-			'created', 
-			'modified', 
-			'lft', 
+			'id',
+			'created',
+			'modified',
+			'lft',
 			'rght'
-		), 
+		),
 		'ignore' => array(
 		),
 		'masterKey' => null
@@ -85,7 +85,7 @@ class CopyableBehavior extends ModelBehavior {
 		$this->record = $Model->find('first', array(
 			'conditions' => array(
 				$Model->alias . '.id' => $id
-			), 
+			),
 			'contain' => $this->contain
 		));
 
@@ -118,7 +118,7 @@ class CopyableBehavior extends ModelBehavior {
 	}
 
 /**
- * Removes any ignored associations, as defined in the model settings, from 
+ * Removes any ignored associations, as defined in the model settings, from
  * the $this->contain array.
  *
  * @param object $Model Model object
@@ -202,7 +202,8 @@ class CopyableBehavior extends ModelBehavior {
  * HABTM join tables may contain extra information (sorting
  * order, etc).
  *
- * @param object $Model Model object
+ * @param Model $Model Model object
+ * @param array $record
  * @return array modified $record
  */
 	protected function _convertHabtm(Model $Model, $record) {
@@ -220,15 +221,15 @@ class CopyableBehavior extends ModelBehavior {
 			if (empty($joinInfo)) {
 				continue;
 			}
-			
+
 			foreach ($joinInfo as $joinKey => $joinVal) {
 				$joinInfo[$joinKey] = $this->_stripFields($Model, $joinVal);
-				
+
 				if (array_key_exists($val['foreignKey'], $joinVal)) {
 					unset($joinInfo[$joinKey][$val['foreignKey']]);
 				}
 			}
-			
+
 			$record[$className] = $joinInfo;
 		}
 
@@ -262,14 +263,14 @@ class CopyableBehavior extends ModelBehavior {
 /**
  * Runs through to update the master key for deep copying.
  *
- * @param object model
+ * @param Model $Model
  * @return array
- */	
+ */
 	protected function _updateMasterKey(Model $Model) {
 		$record = $Model->find('first', array(
 			'conditions' => array(
 				$Model->alias . '.id' => $Model->id
-			), 
+			),
 			'contain' => $this->contain
 		));
 
@@ -280,9 +281,9 @@ class CopyableBehavior extends ModelBehavior {
 /**
  * Called by _updateMasterKey as part of the copying process for deep recursion.
  *
- * @param oject model
- * @param array record
- * @param integer id
+ * @param Model $Model
+ * @param array $record
+ * @param integer $id
  * @return array
  */
 	protected function _masterKeyLoop(Model $Model, $record, $id) {
@@ -363,5 +364,5 @@ class CopyableBehavior extends ModelBehavior {
 
 		return true;
 	}
-	
+
 }
