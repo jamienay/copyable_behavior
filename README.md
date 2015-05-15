@@ -72,13 +72,49 @@ public $actsAs = array(
 ## Usage - Perform Copy
 
 ```
+// $id = the id of the record to be copied (int or uuid)
 if (!$this->MyModel->copy($id)) {
 	throw new CakeException("Unable to copy {$this->MyModel->alias} #{$id}");
 }
 $newId = $this->MyModel->id;
 ```
 
-$id = the id of the record to be copied (int or uuid)
+You can pass in any and all settings at runtime like so:
+
+```
+$settings = array(
+	'contain' => array('Foo', 'Foo.Bar'),
+	'saveAllOptions' => array('deep' => true, 'atomic' => true, 'validate' => true, 'callbacks' => false),
+);
+if (!$this->MyModel->copy($id, $settings)) {
+	throw new CakeException("Unable to copy {$this->MyModel->alias} #{$id} with custom settings");
+}
+$newId = $this->MyModel->id;
+```
+
+You can also pass in an `inject` setting, which will overwrite values after
+`copyPrepareData()` but before `copySaveAll()`
+
+This is great if you want to default/change your data for the `copy()` but don't
+want to have to edit after the copy... (important for unique fields)
+
+```
+$settings = array(
+	'inject' => array(
+		'MyModel' => array(
+			'unique_field' => 'newValue',
+			'parent_id' => $id,
+			'copied_on' => date('Y-m-d H:i:s'),
+			'copied_by' => $user_id,
+		)
+	)
+);
+if (!$this->MyModel->copy($id, $settings)) {
+	throw new CakeException("Unable to copy {$this->MyModel->alias} #{$id} with injected data");
+}
+$newId = $this->MyModel->id;
+```
+
 
 ### Primary Public Method:
 

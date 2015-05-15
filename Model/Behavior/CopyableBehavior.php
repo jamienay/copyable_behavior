@@ -46,6 +46,7 @@ class CopyableBehavior extends ModelBehavior {
  * - habtm: whether to copy hasAndBelongsToMany associations
  * - stripFields: fields to strip during copy process
  * - ignore: aliases of any associations that should be ignored, using dot (.) notation.
+ * - contain: contain part of options for find first (optional, if empty, generates)
  * - saveAllOptions: options for saveAll()
  * - masterKey: if set to a field, will update all records with the new id
  */
@@ -59,8 +60,8 @@ class CopyableBehavior extends ModelBehavior {
 			'lft',
 			'rght'
 		),
-		'ignore' => array(
-		),
+		'ignore' => array(),
+		'contain' => array(),
 		'saveAllOptions' => array(
 			'validate' => false,
 			'deep' => true
@@ -122,6 +123,9 @@ class CopyableBehavior extends ModelBehavior {
 
 		// prepare / convert data
 		$record = $this->copyPrepareData($Model, $record);
+
+		// prepare / inject data
+		$record = $this->_copyInjectData($Model, $record, $settings);
 
 		// stash a copy of this record after prepare
 		$Model->copyData['afterPrepare'] = $record;
@@ -340,17 +344,47 @@ class CopyableBehavior extends ModelBehavior {
 		if (empty($record) || !is_array($record)) {
 			return array();
 		}
+
+		// support for custom copyPrepareData on the Model
+		//   NOTE: beware of recursion, depending on how you implement
+		if (method_exists($Model, 'copyPrepareData')) {
+			$record = $Model->copyPrepareData($record);
+		}
+		if (method_exists($Model, 'copyPrepareDataCustom')) {
+			$record = $Model->copyPrepareDataCustom($record);
+		}
+
 		// clean this set of data
 		$record = $this->_stripFields($Model, $record);
 		if (!empty($record[$Model->alias])) {
 			$record[$Model->alias] = $this->_stripFields($Model, $record[$Model->alias]);
 		}
+
 		// recurse into associations, based on type
 		$record = $this->_convertHabtm($Model, $record);
 		$record = $this->_convertChildrenBelongsTo($Model, $record);
 		$record = $this->_convertChildrenHasOne($Model, $record);
 		$record = $this->_convertChildrenHasMany($Model, $record);
+
 		return $record;
+	}
+
+/**
+ * Injects data into prepare data, optional
+ *
+ * must be setup in $settings but can be passed into the copy() method
+ *
+ * @param object $Model Model object
+ * @param array $record
+ * @param array $settings
+ * @return array $record
+ */
+	protected function _copyInjectData(Model $Model, $record, $settings) {
+		if (empty($settings['inject']) || !is_array($settings['inject'])) {
+			return $record;
+		}
+
+		return Hash::merge($record, $settings['inject']);
 	}
 
 /**

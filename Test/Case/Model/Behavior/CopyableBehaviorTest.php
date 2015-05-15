@@ -797,13 +797,105 @@ class CopyableBehaviorTest extends CakeTestCase {
 		$this->_assertArticleAfterCopy($result, $expected);
 	}
 
+/**
+ * test copy on fixture Article#1 with inject data to overwrite after prep.
+ *
+ * @return void
+ */
+	public function testCopyWithInjectionData() {
+		$initialCounts = array(
+			'Article' => $this->Article->find('count'),
+			'User' => $this->Article->User->find('count'),
+			'Featured' => $this->Article->Featured->find('count'),
+			'Comment' => $this->Article->Comment->find('count'),
+			'Tag' => $this->Article->Tag->find('count'),
+		);
+
+		$customSettings = array(
+			'inject' => array(
+				'Article' => array(
+					'title' => 'INJECT changed this',
+					'published' => 'X',
+				)
+			)
+		);
+		$result = $this->Article->copy(1, $customSettings);
+		$this->assertTrue($result);
+
+		$newId = $this->Article->id;
+		$this->assertTrue(is_numeric($newId));
+
+		// orig is unchanged
+		$result = $this->Article->find('first', array(
+			'contain' => $this->settings['containArticle'],
+			'conditions' => array(
+				'Article.id' => 1
+			)
+		));
+
+		$expected = $this->expectedFromFixtures[0];
+		$this->assertEquals($expected, $result);
+
+		// see how many records were created
+		$this->assertEquals(
+			$this->Article->find('count'),
+			$initialCounts['Article'] + 1
+		);
+		$this->assertEquals(
+			$this->Article->User->find('count'),
+			$initialCounts['User']
+		);
+		$this->assertEquals(
+			$this->Article->Featured->find('count'),
+			$initialCounts['Featured'] + 1
+		);
+		$this->assertEquals(
+			$this->Article->Comment->find('count'),
+			$initialCounts['Comment'] + 4
+		);
+		// should not have made any more HABTM targets
+		//   should only have made more join records
+		$this->assertEquals(
+			$this->Article->Tag->find('count'),
+			$initialCounts['Tag']
+		);
+
+		// new record
+		$result = $this->Article->find('first', array(
+			'contain' => $this->settings['containArticle'],
+			'conditions' => array(
+				'Article.id' => $newId
+			)
+		));
+
+		// Inject changed expectations
+		$expected['Article']['title'] = $customSettings['inject']['Article']['title'];
+		$expected['Article']['published'] = $customSettings['inject']['Article']['published'];
+		$this->_assertArticleAfterCopy($result, $expected);
+	}
+
 
 
 /**
- *
+ * custom assertion helper
  *
  */
 	public function _assertArticleAfterCopy($result, $expected) {
+		// verify self
+		$fields = array(
+			'title',
+			'body',
+			'published',
+			'published_date',
+		);
+		foreach ($fields as $field) {
+			$this->assertEquals(
+				Hash::extract($result, "Article.$field"),
+				Hash::extract($expected, "Article.$field"),
+				"self Article.$field should match expected"
+			);
+		}
+
 		// verify belongsTo
 		if (!(empty($result['User']) && empty($expected['User']))) {
 			$this->assertEquals(
