@@ -448,9 +448,11 @@ class CopyableBehavior extends ModelBehavior {
 			//     [ArticlesTag => [...],
 			//     [ArticlesTag => [...],
 			//   ]]
-			$records = $this->_convertHabtmUsingWith($Model, $record[$className], $config);
-			if (!empty($records)) {
-				$record[$className] = $records;
+			$habtm = $this->_convertHabtmUsingWith($Model, $record[$className], $config);
+			if (!empty($habtm)) {
+				// now [ArticlesTag => [...]]
+				$record = array_merge($record, $habtm);
+				unset($record[$className]);
 				continue;
 			}
 
@@ -461,6 +463,7 @@ class CopyableBehavior extends ModelBehavior {
 			//   ]]
 			$records = $this->_convertHabtmUsingAsIds($Model, $record[$className], $config);
 			if (!empty($records)) {
+				// now [Tag => [Tag => [...]]]
 				$record[$className] = $records;
 				continue;
 			}
@@ -471,19 +474,55 @@ class CopyableBehavior extends ModelBehavior {
 
 		return $record;
 	}
-	protected function _convertHabtmUsingWith(Model $Model, $records, $config) {
-		$records = Hash::extract($records, '{n}.' . $config['with']);
 
-		foreach ($records as $joinKey => $joinVal) {
-			$records[$joinKey] = $this->_stripFields($Model, $joinVal);
+/**
+ * Converts hasAndBelongsToMany records based on a simple joins table
+ *
+ * This is done if there is no With records...
+ *
+ * If you have a more complicated join or a join with any extra data use a With association
+ *
+ * input:  $data['Assoc' => ['id', ...], ['id', ...]]
+ * output: $data['Assoc' => ['Assoc' => ['id', 'id', ...]
+ *
+ * @param Model $Model Model object
+ * @param array $record
+ * @param array $config
+ * @return array modified $record
+ */
+	protected function _convertHabtmUsingWith(Model $Model, $records, $config) {
+		$habtmViaWith = Hash::extract($records, '{n}.' . $config['with']);
+
+		if (empty($habtmViaWith)) {
+			return array();
+		}
+
+		foreach ($habtmViaWith as $joinKey => $joinVal) {
+			$habtmViaWith[$joinKey] = $this->_stripFields($Model, $joinVal);
 
 			if (array_key_exists($config['foreignKey'], $joinVal)) {
-				unset($records[$joinKey][$config['foreignKey']]);
+				unset($habtmViaWith[$joinKey][$config['foreignKey']]);
 			}
 		}
 
-		return $records;
+		return array($config['with'] => $habtmViaWith);
 	}
+
+/**
+ * Converts hasAndBelongsToMany records based on a simple joins table
+ *
+ * This is done if there is no With records...
+ *
+ * If you have a more complicated join or a join with any extra data use a With association
+ *
+ * input:  $data['Assoc' => ['id', ...], ['id', ...]]
+ * output: $data['Assoc' => ['Assoc' => ['id', 'id', ...]
+ *
+ * @param Model $Model Model object
+ * @param array $record
+ * @param array $config
+ * @return array modified $record
+ */
 	protected function _convertHabtmUsingAsIds(Model $Model, $records, $config) {
 		$ids = [];
 		foreach ($records as $joinKey => $joinVal) {
@@ -494,10 +533,10 @@ class CopyableBehavior extends ModelBehavior {
 		}
 
 		if (empty($ids)) {
-			return [];
+			return array();
 		}
 
-		return [$config['className'] => $ids];
+		return array($config['className'] => $ids);
 	}
 
 /**

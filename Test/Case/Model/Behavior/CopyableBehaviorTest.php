@@ -310,6 +310,8 @@ class CopyableBehaviorTest extends CakeTestCase {
 		'core.article_featureds_tags',
 		'core.category',
 		'core.attachment',
+		'plugin.copyable.widget',
+		'plugin.copyable.articles_widget',
 	);
 
 /**
@@ -563,7 +565,6 @@ class CopyableBehaviorTest extends CakeTestCase {
 				),
 			),
 		);
-		//echo var_export($result);
 		$this->assertEquals($expected, $result);
 	}
 
@@ -573,7 +574,274 @@ class CopyableBehaviorTest extends CakeTestCase {
  * @return void
  */
 	public function testCopyPrepareDataHABTMViaWith() {
-		// todo
+		$this->Article->bindModel(
+			array(
+				'hasMany' => array(
+					'ArticlesWidget' => array()
+				),
+				'hasAndBelongsToMany' => array(
+					'Widget' => array('with' => 'ArticlesWidget')
+				),
+			),
+			false
+		);
+		$this->Article->ArticlesWidget->bindModel(
+			array(
+				'belongsTo' => array(
+					'Article' => array(),
+					'Widget' => array(),
+				),
+			),
+			false
+		);
+		$this->Article->Widget->bindModel(
+			array(
+				'hasMany' => array(
+					'ArticlesWidget' => array(),
+				),
+			),
+			false
+		);
+		$before = $this->Article->find('first', array(
+			'contain' => array(
+				'Widget',
+				'Widget.ArticlesWidget',
+			),
+			'recursive' => -1,
+		));
+		$this->assertEquals(
+			$before,
+			array(
+				'Article' => array(
+					'id' => '1',
+					'user_id' => '1',
+					'title' => 'First Article',
+					'body' => 'First Article Body',
+					'published' => 'Y',
+					'created' => '2007-03-18 10:39:23',
+					'updated' => '2007-03-18 10:41:31'
+				),
+				'Widget' => array(
+					(int) 0 => array(
+						'id' => '1',
+						'name' => 'Widget 1',
+						'ArticlesWidget' => array(
+							'id' => '1',
+							'article_id' => '1',
+							'widget_id' => '1',
+							'order' => '1',
+							'status' => 'good',
+							(int) 0 => array(
+								'id' => '1',
+								'article_id' => '1',
+								'widget_id' => '1',
+								'order' => '1',
+								'status' => 'good'
+							)
+						)
+					),
+					(int) 1 => array(
+						'id' => '2',
+						'name' => 'Widget 2',
+						'ArticlesWidget' => array(
+							'id' => '2',
+							'article_id' => '1',
+							'widget_id' => '2',
+							'order' => '2',
+							'status' => 'maybe',
+							(int) 0 => array(
+								'id' => '2',
+								'article_id' => '1',
+								'widget_id' => '2',
+								'order' => '2',
+								'status' => 'maybe'
+							)
+						)
+					),
+					(int) 2 => array(
+						'id' => '3',
+						'name' => 'Widget 3',
+						'ArticlesWidget' => array(
+							'id' => '3',
+							'article_id' => '1',
+							'widget_id' => '3',
+							'order' => '3',
+							'status' => 'bad',
+							(int) 0 => array(
+								'id' => '3',
+								'article_id' => '1',
+								'widget_id' => '3',
+								'order' => '3',
+								'status' => 'bad'
+							)
+						)
+					)
+				)
+			)
+		);
+		$result = $this->Article->copyPrepareData($before);
+		$expected = array(
+			'Article' => array(
+				'user_id' => '1',
+				'title' => 'First Article',
+				'body' => 'First Article Body',
+				'published' => 'Y',
+				'updated' => '2007-03-18 10:41:31'
+			),
+			// handles as hasMany (nested)
+			'ArticlesWidget' => array(
+				array(
+					'widget_id' => '1',
+					'order' => '1',
+					'status' => 'good',
+					(int) 0 => array(
+						'id' => '1',
+						'article_id' => '1',
+						'widget_id' => '1',
+						'order' => '1',
+						'status' => 'good'
+					)
+				),
+				array(
+					'widget_id' => '2',
+					'order' => '2',
+					'status' => 'maybe',
+					(int) 0 => array(
+						'id' => '2',
+						'article_id' => '1',
+						'widget_id' => '2',
+						'order' => '2',
+						'status' => 'maybe'
+					)
+				),
+				array(
+					'widget_id' => '3',
+					'order' => '3',
+					'status' => 'bad',
+					(int) 0 => array(
+						'id' => '3',
+						'article_id' => '1',
+						'widget_id' => '3',
+						'order' => '3',
+						'status' => 'bad'
+					)
+				)
+			),
+		);
+		$this->assertEquals($expected, $result);
+	}
+
+/**
+ * test preparation of data for full, nested values - with HABTM via With as hasMany
+ *
+ * @return void
+ */
+	public function testCopyPrepareDataHABTMViaWithAsHasMany() {
+		$this->Article->bindModel(
+			array(
+				'hasMany' => array(
+					'ArticlesWidget' => array()
+				),
+				'hasAndBelongsToMany' => array(
+					'Widget' => array('with' => 'ArticlesWidget')
+				),
+			),
+			false
+		);
+		$this->Article->ArticlesWidget->bindModel(
+			array(
+				'belongsTo' => array(
+					'Article' => array(),
+					'Widget' => array(),
+				),
+			),
+			false
+		);
+		$before = $this->Article->find('first', array(
+			'contain' => array(
+				'ArticlesWidget',
+				'ArticlesWidget.Widget',
+			),
+			'recursive' => -1,
+		));
+		$this->assertEquals(
+			$before,
+			array(
+				'Article' => array(
+					'id' => '1',
+					'user_id' => '1',
+					'title' => 'First Article',
+					'body' => 'First Article Body',
+					'published' => 'Y',
+					'created' => '2007-03-18 10:39:23',
+					'updated' => '2007-03-18 10:41:31'
+				),
+				'ArticlesWidget' => array(
+					array(
+						'id' => '1',
+						'article_id' => '1',
+						'widget_id' => '1',
+						'order' => '1',
+						'status' => 'good',
+						'Widget' => array(
+							'id' => '1',
+							'name' => 'Widget 1'
+						)
+					),
+					array(
+						'id' => '2',
+						'article_id' => '1',
+						'widget_id' => '2',
+						'order' => '2',
+						'status' => 'maybe',
+						'Widget' => array(
+							'id' => '2',
+							'name' => 'Widget 2'
+						)
+					),
+					array(
+						'id' => '3',
+						'article_id' => '1',
+						'widget_id' => '3',
+						'order' => '3',
+						'status' => 'bad',
+						'Widget' => array(
+							'id' => '3',
+							'name' => 'Widget 3'
+						)
+					)
+				)
+			)
+		);
+		$result = $this->Article->copyPrepareData($before);
+		$expected = array(
+			'Article' => array(
+				'user_id' => '1',
+				'title' => 'First Article',
+				'body' => 'First Article Body',
+				'published' => 'Y',
+				'updated' => '2007-03-18 10:41:31'
+			),
+			// handles as hasMany (nested)
+			'ArticlesWidget' => array(
+				array(
+					'widget_id' => '1',
+					'order' => '1',
+					'status' => 'good',
+				),
+				array(
+					'widget_id' => '2',
+					'order' => '2',
+					'status' => 'maybe',
+				),
+				array(
+					'widget_id' => '3',
+					'order' => '3',
+					'status' => 'bad',
+				)
+			)
+		);
+		$this->assertEquals($expected, $result);
 	}
 
 /**
