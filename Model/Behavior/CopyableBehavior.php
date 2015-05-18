@@ -451,8 +451,8 @@ class CopyableBehavior extends ModelBehavior {
 			$habtm = $this->_convertHabtmUsingWith($Model, $record[$className], $config);
 			if (!empty($habtm)) {
 				// now [ArticlesTag => [...]]
-				$record = array_merge($record, $habtm);
 				unset($record[$className]);
+				$record = array_merge($record, $habtm);
 				continue;
 			}
 
