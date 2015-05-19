@@ -5,13 +5,26 @@
  * Adds ability to copy a model record, including all hasMany and hasAndBelongsToMany
  * associations. Relies on Containable behavior, which this behavior will attach
  * on the fly as needed.
- * 
+ *
  * HABTM relationships are just duplicated in the join table, while hasMany and hasOne
  * records are recursively copied as well.
  *
  * Usage is straightforward:
- * From model: $this->copy($id); // id = the id of the record to be copied
- * From container: $this->MyModel->copy($id);
+ *   $id = the id of the record to be copied (int or uuid)
+ *
+ * From model:
+ *   $this->copy($id);
+ * From controller:
+ *   $this->MyModel->copy($id);
+ *
+ * Primary Public Method:
+ *   copy($id, $settings)     --> $saved
+ *
+ * Secondary Public Methods:
+ *   copyGenerateContain()    --> $contain (from settings, or generated)
+ *   copyFindData($id)        --> $record    (find first w/ contains)
+ *   copyPrepareData($record) --> $record    (convert data w/o foreignKey/stripFields)
+ *   copySaveAll($record)     --> $saved   (do saveAll and update masterKey)
  *
  * @filesource
  * @author			Jamie Nay
@@ -27,38 +40,39 @@ class CopyableBehavior extends ModelBehavior {
 	public $settings = array();
 
 /**
- * Array of contained models.
- */
-	public $contain = array();
-
-/**
- * The full results of Model::find() that are modified and saved
- * as a new copy.
- */
-	public $record = array();
-
-/**
  * Default values for settings.
  *
+ * - contain: contain part of options for find first (optional, if empty, generates)
  * - recursive: whether to copy hasMany and hasOne records
  * - habtm: whether to copy hasAndBelongsToMany associations
  * - stripFields: fields to strip during copy process
  * - ignore: aliases of any associations that should be ignored, using dot (.) notation.
- * will look in the $this->contain array.
+ * - merge: value to be merged into data via Hash::merge()
+ * - insert: array of path => value to be merged into data via Hash::insert()
+ * - saveAllOptions: options for saveAll()
+ * - masterKey: if set to a field, will update all records with the new id
+ * - quiet: if true, catches Exception and fail silently (returns false)
  */
 	protected $_defaults = array(
-		'recursive' => true, 
-		'habtm' => true, 
+		'contain' => array(),
+		'recursive' => true,
+		'habtm' => true,
 		'stripFields' => array(
-			'id', 
-			'created', 
-			'modified', 
-			'lft', 
+			'id',
+			'created',
+			'modified',
+			'lft',
 			'rght'
-		), 
-		'ignore' => array(
 		),
-		'masterKey' => null
+		'ignore' => array(),
+		'merge' => array(),
+		'insert' => array(),
+		'saveAllOptions' => array(
+			'validate' => false,
+			'deep' => true
+		),
+		'masterKey' => null,
+		'quiet' => false,
 	);
 
 /**
@@ -74,107 +88,252 @@ class CopyableBehavior extends ModelBehavior {
 	}
 
 /**
+ * Get settings and merge in any custom "run time" overrides
+ *
+ * @param object $Model Model object
+ * @param array $settings Config array
+ * @return array $settings
+ */
+	public function settings(Model $Model, $settings = array()) {
+		return array_merge(
+			$this->_defaults,
+			// when we start copy, we set these "sticky" settings for this run
+			(!empty($this->settings['copyRunning']) ? $this->settings['copyRunning'] : array()),
+			// Model specific settings, overwrite "sticky" settings
+			(!empty($this->settings[$Model->alias]) ? $this->settings[$Model->alias] : array()),
+			// anything passed into this function always wins/overwrites
+			$settings
+		);
+	}
+
+/**
  * Copy method.
  *
  * @param object $Model model object
  * @param mixed $id String or integer model ID
+ * @param array $settings optionally pass in custom settings
  * @return boolean
  */
-	public function copy(Model $Model, $id) {
-		$this->generateContain($Model);
-		$this->record = $Model->find('first', array(
-			'conditions' => array(
-				$Model->alias . '.id' => $id
-			), 
-			'contain' => $this->contain
-		));
+	public function copy(Model $Model, $id, $settings = array()) {
+		// clear the "sticky" settings for copyRunning
+		$this->settings['copyRunning'] = array();
+		// get the clean list of settings for the parent Model + runtime settings
+		$settings = $this->settings($Model, $settings);
+		// set the "sticky" settings for copyRunning
+		$this->settings['copyRunning'] = $settings;
 
-		if (empty($this->record)) {
+		// get data
+		$record = $Model->copyFindData($id, $settings);
+		// stash a copy of this record before prepare
+		$Model->copyData['beforePrepare'] = $record;
+
+		// prepare / convert data
+		$record = $this->copyPrepareData($Model, $record);
+
+		// prepare / overwrite data
+		// - inject or merge or hash::merge --> Hash::merge()
+		// - insert or hash::insert --> Hash::insert()
+		$record = $this->_copyInjectData($Model, $record, $settings);
+
+		// stash a copy of this record after prepare
+		$Model->copyData['afterPrepare'] = $record;
+
+		if (empty($record)) {
+			$this->log("Copy of $id resulted in empty data, after convertion");
 			return false;
 		}
 
-		if (!$this->_convertData($Model)) {
-			return false;
-		}
-
-		return $this->_copyRecord($Model);
+		// save data
+		return $this->copySaveAll($Model, $record);
 	}
 
 /**
- * Wrapper method that combines the results of _recursiveChildContain()
+ * Find first on the Model with the contain for copy
+ * Used by copy()
+ * Used by _updateMasterKey()
+ *
+ * @param object $Model model object
+ * @param mixed $id String or integer model ID
+ * @param array $settings optionally pass in custom settings
+ * @return boolean
+ */
+	public function copyFindData(Model $Model, $id, $settings = array()) {
+		$settings = $this->settings($Model, $settings);
+
+		// clear stash of data on the Model (useful for debugging)
+		$Model->copyData = [];
+		$record = $Model->find('first', array(
+			'conditions' => array(
+				$Model->escapeField() => $id
+			),
+			'contain' => $this->copyGenerateContain($Model),
+		));
+
+		if (empty($record)) {
+			$this->log("Copy of $id resulted in empty data, after find");
+			return false;
+		}
+
+		return $record;
+	}
+
+/**
+ * Wrapper method that combines the results of _generateContainHasRecursivly()
  * with the models' HABTM associations.
+ *
+ * @param object $Model Model object
+ * @return array $contain
+ */
+	public function copyGenerateContain(Model $Model) {
+		if (!$this->_verifyContainable($Model)) {
+			return false;
+		}
+
+		// support for custom configured contain for this Model
+		$settings = $this->settings($Model);
+		if (!empty($settings['contain'])) {
+			return $settings['contain'];
+		}
+
+		// dynamically create a contains
+		$contain = array();
+		//   ignore belongsTo (no need, since field is on this Model)
+		//   recursive get hasOne and hasMany
+		$contain = $this->_generateContainHasRecursivly($Model, $contain);
+		//   get all HABTM, but not recursively
+		$contain = $this->_generateContainHABTM($Model, $contain);
+
+		$contain = $this->_generateContainRemoveIgnored($Model, $contain);
+		return $contain;
+	}
+
+/**
+ * Backwards compatible alias
  *
  * @param object $Model Model object
  * @return array
  */
 	public function generateContain(Model $Model) {
-		if (!$this->_verifyContainable($Model)) {
-			return false;
-		}
-
-		$this->contain = array_merge($this->_recursiveChildContain($Model), array_keys($Model->hasAndBelongsToMany));
-		$this->_removeIgnored($Model);
-		return $this->contain;
+		return $this->copyGenerateContain($Model);
 	}
 
 /**
- * Removes any ignored associations, as defined in the model settings, from 
- * the $this->contain array.
+ * Removes any ignored associations, as defined in the model settings,
+ * from the $contain array.
  *
  * @param object $Model Model object
- * @return boolean
+ * @param array $contain
+ * @return array $contain
  */
-	protected function _removeIgnored(Model $Model) {
-		if (!$this->settings[$Model->alias]['ignore']) {
-			return true;
+	protected function _generateContainRemoveIgnored(Model $Model, $contain) {
+		$settings = $this->settings($Model);
+
+		if (!$settings['ignore']) {
+			return $contain;
 		}
-		$ignore = array_unique($this->settings[$Model->alias]['ignore']);
+		$ignore = array_unique($settings['ignore']);
 		foreach ($ignore as $path) {
-			if (Set::check($this->contain, $path)) {
-				$this->contain = Set::remove($this->contain, $path);
+			if (Hash::check($contain, $path)) {
+				$contain = Hash::remove($contain, $path);
 			}
 		}
-		return true;
+		return $contain;
 	}
 
 /**
- * Strips primary keys and other unwanted fields
- * from hasOne and hasMany records.
+ * Strips all records for belongsTo associations
  *
  * @param object $Model model object
  * @param array $record
  * @return array $record
  */
-	protected function _convertChildren(Model $Model, $record) {
-		$children = array_merge($Model->hasMany, $Model->hasOne);
-		foreach ($children as $key => $val) {
-			if (!isset($record[$key])) {
+	protected function _convertChildrenBelongsTo(Model $Model, $record) {
+		return array_diff_key($record, $Model->belongsTo);
+	}
+
+/**
+ * Strips primary keys and other unwanted fields
+ * from hasOne
+ *
+ * @param object $Model model object
+ * @param array $record
+ * @return array $record
+ */
+	protected function _convertChildrenHasOne(Model $Model, $record) {
+		foreach ($Model->hasOne as $alias => $config) {
+			if (!isset($record[$alias])) {
 				continue;
 			}
 
-			if (empty($record[$key])) {
-				unset($record[$key]);
+			if (empty($record[$alias])) {
+				unset($record[$alias]);
 				continue;
 			}
 
-			if (isset($record[$key][0])) {
-				foreach ($record[$key] as $innerKey => $innerVal) {
-					$record[$key][$innerKey] = $this->_stripFields($Model, $innerVal);
-					if (array_key_exists($val['foreignKey'], $innerVal)) {
-						unset($record[$key][$innerKey][$val['foreignKey']]);
-					}
-
-					$record[$key][$innerKey] = $this->_convertChildren($Model->{$key}, $record[$key][$innerKey]);
-				}
-			} else {
-				$record[$key] = $this->_stripFields($Model, $record[$key]);
-
-				if (isset($record[$key][$val['foreignKey']])) {
-					unset($record[$key][$val['foreignKey']]);
-				}
-
-				$record[$key] = $this->_convertChildren($Model->{$key}, $record[$key]);
+			$record[$alias] = $this->_convertChild($Model, $record[$alias], $alias, $config);
+			if (empty($record[$alias])) {
+				unset($record[$alias]);
 			}
+		}
+		return $record;
+	}
+
+/**
+ * Strips primary keys and other unwanted fields
+ * from hasMany
+ *
+ * @param object $Model model object
+ * @param array $record
+ * @return array $record
+ */
+	protected function _convertChildrenHasMany(Model $Model, $record) {
+		foreach ($Model->hasMany as $alias => $config) {
+			if (!isset($record[$alias])) {
+				continue;
+			}
+
+			if (empty($record[$alias])) {
+				unset($record[$alias]);
+				continue;
+			}
+
+			foreach (array_keys($record[$alias]) as $i) {
+				$record[$alias][$i] = $this->_convertChild($Model, $record[$alias][$i], $alias, $config);
+				if (empty($record[$alias][$i])) {
+					unset($record[$alias][$i]);
+				}
+			}
+			if (empty($record[$alias])) {
+				unset($record[$alias]);
+			}
+		}
+		return $record;
+	}
+
+/**
+ * Strips primary keys and other unwanted fields
+ * from a single hasOne and hasMany records.
+ *
+ * @param object $Model model object
+ * @param array $record
+ * @param string $alias of the child Model
+ * @param array $config of the Association
+ * @return array $record
+ */
+	protected function _convertChild(Model $Model, $record, $alias, $config) {
+		$record = $this->_stripFields($Model, $record);
+
+		if (isset($record[$config['foreignKey']])) {
+			unset($record[$config['foreignKey']]);
+		}
+
+		$record = $this->copyPrepareData($Model->{$alias}, $record);
+
+		// is this completely empty (contains only empty values)?
+		//   if so, strip...
+		$filtered = Hash::filter($record);
+		if (empty($filtered)) {
+			return [];
 		}
 
 		return $record;
@@ -182,79 +341,233 @@ class CopyableBehavior extends ModelBehavior {
 
 /**
  * Strips primary and parent foreign keys (where applicable)
- * from $this->record in preparation for saving.
+ * from $record in preparation for saving.
  *
  * @param object $Model Model object
- * @return array $this->record
+ * @param array $record
+ * @return array $record
  */
-	protected function _convertData(Model $Model) {
-		$this->record[$Model->alias] = $this->_stripFields($Model, $this->record[$Model->alias]);
-		$this->record = $this->_convertHabtm($Model, $this->record);
-		$this->record = $this->_convertChildren($Model, $this->record);
-		return $this->record;
+	public function copyPrepareData(Model $Model, $record) {
+		// validation
+		if (empty($record) || !is_array($record)) {
+			return array();
+		}
+
+		// support for custom copyPrepareData on the Model
+		//   NOTE: beware of recursion, depending on how you implement
+		if (method_exists($Model, 'copyPrepareData')) {
+			$record = $Model->copyPrepareData($record);
+		}
+		if (method_exists($Model, 'copyPrepareDataCustom')) {
+			$record = $Model->copyPrepareDataCustom($record);
+		}
+
+		// clean this set of data
+		$record = $this->_stripFields($Model, $record);
+		if (!empty($record[$Model->alias])) {
+			$record[$Model->alias] = $this->_stripFields($Model, $record[$Model->alias]);
+		}
+
+		// recurse into associations, based on type
+		$record = $this->_convertHabtm($Model, $record);
+		$record = $this->_convertChildrenBelongsTo($Model, $record);
+		$record = $this->_convertChildrenHasOne($Model, $record);
+		$record = $this->_convertChildrenHasMany($Model, $record);
+
+		return $record;
 	}
 
 /**
- * Loops through any HABTM results in $this->record and plucks out
- * the join table info, stripping out the join table primary
- * key and the primary key of $Model. This is done instead of
- * a simple collection of IDs of the associated records, since
- * HABTM join tables may contain extra information (sorting
- * order, etc).
+ * Injects data into prepare data, optional
+ *
+ * must be setup in $settings but can be passed into the copy() method
  *
  * @param object $Model Model object
- * @return array modified $record
+ * @param array $record
+ * @param array $settings
+ * @return array $record
  */
-	protected function _convertHabtm(Model $Model, $record) {
-		if (!$this->settings[$Model->alias]['habtm']) {
-			return $record;
-		}
-		foreach ($Model->hasAndBelongsToMany as $key => $val) {
-			$className = pluginSplit($val['className']);
-			$className = $className[1];
-			if (!isset($record[$className]) || empty($record[$className])) {
-				continue;
-			}
+	protected function _copyInjectData(Model $Model, $record, $settings) {
 
-			$joinInfo = Set::extract($record[$className], '{n}.' . $val['with']);
-			if (empty($joinInfo)) {
-				continue;
+		// merge in possible configured overrides Hash::merge()
+		if (!empty($settings['inject'])) {
+			$record = Hash::merge($record, $settings['inject']);
+		}
+		if (!empty($settings['merge'])) {
+			$record = Hash::merge($record, $settings['merge']);
+		}
+		if (!empty($settings['hash::merge'])) {
+			$record = Hash::merge($record, $settings['hash::merge']);
+		}
+
+		// merge in possible configured overrides Hash::insert()
+		if (!empty($settings['insert'])) {
+			foreach ($settings['insert'] as $path => $values) {
+				$record = Hash::insert($record, $path, $values);
 			}
-			
-			foreach ($joinInfo as $joinKey => $joinVal) {
-				$joinInfo[$joinKey] = $this->_stripFields($Model, $joinVal);
-				
-				if (array_key_exists($val['foreignKey'], $joinVal)) {
-					unset($joinInfo[$joinKey][$val['foreignKey']]);
-				}
+		}
+		if (!empty($settings['hash::insert'])) {
+			foreach ($settings['hash::insert'] as $path => $values) {
+				$record = Hash::insert($record, $path, $values);
 			}
-			
-			$record[$className] = $joinInfo;
 		}
 
 		return $record;
 	}
 
 /**
+ * Loops through any HABTM results in $record and plucks out
+ * the join table info, stripping out the join table primary
+ * key and the primary key of $Model. This is done instead of
+ * a simple collection of IDs of the associated records, since
+ * HABTM join tables may contain extra information (sorting
+ * order, etc).
+ *
+ * @param Model $Model Model object
+ * @param array $record
+ * @return array modified $record
+ */
+	protected function _convertHabtm(Model $Model, $record) {
+		$settings = $this->settings($Model);
+		if (empty($settings['habtm'])) {
+			return $record;
+		}
+		foreach ($Model->hasAndBelongsToMany as $alias => $config) {
+			$className = pluginSplit($config['className']);
+			$className = $className[1];
+			if (!isset($record[$className])) {
+				continue;
+			}
+			if (empty($record[$className])) {
+				unset($record[$className]);
+				continue;
+			}
+
+			// we might have HABTM values via a WITH alias
+			//   [Tag => [
+			//     [ArticlesTag => [...],
+			//     [ArticlesTag => [...],
+			//   ]]
+			$habtm = $this->_convertHabtmUsingWith($Model, $record[$className], $config);
+			if (!empty($habtm)) {
+				// now [ArticlesTag => [...]]
+				unset($record[$className]);
+				$record = array_merge($record, $habtm);
+				continue;
+			}
+
+			// we might have HABTM values via a simple nested list
+			//   [Tag => [
+			//     [...],
+			//     [...],
+			//   ]]
+			$records = $this->_convertHabtmUsingAsIds($Model, $record[$className], $config);
+			if (!empty($records)) {
+				// now [Tag => [Tag => [...]]]
+				$record[$className] = $records;
+				continue;
+			}
+
+			unset($record[$className]);
+
+		}
+
+		return $record;
+	}
+
+/**
+ * Converts hasAndBelongsToMany records based on a simple joins table
+ *
+ * This is done if there is no With records...
+ *
+ * If you have a more complicated join or a join with any extra data use a With association
+ *
+ * input:  $data['Assoc' => ['id', ...], ['id', ...]]
+ * output: $data['Assoc' => ['Assoc' => ['id', 'id', ...]
+ *
+ * @param Model $Model Model object
+ * @param array $record
+ * @param array $config
+ * @return array modified $record
+ */
+	protected function _convertHabtmUsingWith(Model $Model, $records, $config) {
+		$habtmViaWith = Hash::extract($records, '{n}.' . $config['with']);
+
+		if (empty($habtmViaWith)) {
+			return array();
+		}
+
+		foreach ($habtmViaWith as $joinKey => $joinVal) {
+			$habtmViaWith[$joinKey] = $this->_stripFields($Model, $joinVal);
+
+			if (array_key_exists($config['foreignKey'], $joinVal)) {
+				unset($habtmViaWith[$joinKey][$config['foreignKey']]);
+			}
+		}
+
+		return array($config['with'] => $habtmViaWith);
+	}
+
+/**
+ * Converts hasAndBelongsToMany records based on a simple joins table
+ *
+ * This is done if there is no With records...
+ *
+ * If you have a more complicated join or a join with any extra data use a With association
+ *
+ * input:  $data['Assoc' => ['id', ...], ['id', ...]]
+ * output: $data['Assoc' => ['Assoc' => ['id', 'id', ...]
+ *
+ * @param Model $Model Model object
+ * @param array $record
+ * @param array $config
+ * @return array modified $record
+ */
+	protected function _convertHabtmUsingAsIds(Model $Model, $records, $config) {
+		$ids = [];
+		foreach ($records as $joinKey => $joinVal) {
+			if (empty($joinVal['id'])) {
+				continue;
+			}
+			$ids[] = $joinVal['id'];
+		}
+
+		if (empty($ids)) {
+			return array();
+		}
+
+		return array($config['className'] => $ids);
+	}
+
+/**
  * Performs the actual creation and save.
  *
+ * This should only be done AFTER we have perpared/converted the record.
+ *
  * @param object $Model Model object
+ * @param array $record full data record to save (converted)
  * @return mixed
  */
-	protected function _copyRecord(Model $Model) {
+	public function copySaveAll(Model $Model, $record) {
+		$settings = $this->settings($Model);
 		$Model->create();
+		try {
+			$saved = $Model->saveAll(
+				$record,
+				$settings['saveAllOptions']
+			);
+		} catch (Exception $e) {
+			$this->log('Copyable copySaveAll Exception: ' . $e->getMessage());
+			if (!empty($settings['quiet'])) {
+				return false;
+			}
+			throw $e;
+		}
+		$id = $Model->id;
 
-		$saved = $Model->saveAll($this->record, array(
-			'validate' => false,
-			'deep' => true
-		));
-
-		if ($this->settings[$Model->alias]['masterKey']) {
-			$record = $this->_updateMasterKey($Model);
-			$Model->saveAll($record, array(
-				'validate' => false,
-				'deep' => true
-			));
+		if ($settings['masterKey']) {
+			$record = $this->_updateMasterKey($Model, $id);
+			$Model->saveAll($record, $settings['saveAllOptions']);
 		}
 		return $saved;
 	}
@@ -262,17 +575,11 @@ class CopyableBehavior extends ModelBehavior {
 /**
  * Runs through to update the master key for deep copying.
  *
- * @param object model
+ * @param Model $Model
  * @return array
- */	
-	protected function _updateMasterKey(Model $Model) {
-		$record = $Model->find('first', array(
-			'conditions' => array(
-				$Model->alias . '.id' => $Model->id
-			), 
-			'contain' => $this->contain
-		));
-
+ */
+	protected function _updateMasterKey(Model $Model, $id) {
+		$record = $Model->copyFindData($id, array());
 		$record = $this->_masterKeyLoop($Model, $record, $Model->id);
 		return $record;
 	}
@@ -280,12 +587,13 @@ class CopyableBehavior extends ModelBehavior {
 /**
  * Called by _updateMasterKey as part of the copying process for deep recursion.
  *
- * @param oject model
- * @param array record
- * @param integer id
+ * @param Model $Model
+ * @param array $record
+ * @param integer $id
  * @return array
  */
 	protected function _masterKeyLoop(Model $Model, $record, $id) {
+		$settings = $this->settings($Model);
 		foreach ($record as $key => $val) {
 			if (is_array($val)) {
 				if (empty($val)) {
@@ -298,35 +606,60 @@ class CopyableBehavior extends ModelBehavior {
 				}
 			}
 
-			if (!isset($val[$this->settings[$Model->alias]['masterKey']])) {
+			if (!isset($val[$settings['masterKey']])) {
 				continue;
 			}
 
-			$record[$this->settings[$Model->alias]['masterKey']] = $id;
+			$record[$settings['masterKey']] = $id;
 		}
 		return $record;
 	}
 
 /**
- * Generates a contain array for Containable behavior by
- * recursively looping through $Model->hasMany and
- * $Model->hasOne associations.
+ * Generates a contain array for Containable behavior by recursively looping through
+ * - $Model->hasMany associations
+ * - $Model->hasOne associations
  *
  * @param object $Model Model object
- * @return array
+ * @param array $contain
+ * @return array $contain
  */
-	protected function _recursiveChildContain(Model $Model) {
-		$contain = array();
-		if (!isset($this->settings[$Model->alias]) || !$this->settings[$Model->alias]['recursive']) {
+	protected function _generateContainHasRecursivly(Model $Model, $contain = array()) {
+		$settings = $this->settings($Model);
+		if (!isset($settings) || !$settings['recursive']) {
 			return $contain;
 		}
 
 		$children = array_merge(array_keys($Model->hasMany), array_keys($Model->hasOne));
 		foreach ($children as $child) {
 			if ($Model->alias == $child) {
+				// do not contain self
 				continue;
 			}
-			$contain[$child] = $this->_recursiveChildContain($Model->{$child});
+			// recursive contain these children's children
+			//   [Comment => [User => [Profile => []]]]
+			$contain[$child] = $this->_generateContainHasRecursivly($Model->{$child});
+		}
+
+		return $contain;
+	}
+
+/**
+ * Generates a contain array for Containable behavior by looking for only
+ * - $Model->hasAndBelongsToMany associations
+ *
+ * @param object $Model Model object
+ * @param array $contain
+ * @return array $contain
+ */
+	protected function _generateContainHABTM(Model $Model, $contain = array()) {
+		$settings = $this->settings($Model);
+		if (!isset($settings) || !$settings['habtm']) {
+			return $contain;
+		}
+
+		foreach (array_keys($Model->hasAndBelongsToMany) as $habtm) {
+			$contain[$habtm] = array();
 		}
 
 		return $contain;
@@ -341,7 +674,8 @@ class CopyableBehavior extends ModelBehavior {
  * @return array
  */
 	protected function _stripFields(Model $Model, $record) {
-		foreach ($this->settings[$Model->alias]['stripFields'] as $field) {
+		$settings = $this->settings($Model);
+		foreach ($settings['stripFields'] as $field) {
 			if (array_key_exists($field, $record)) {
 				unset($record[$field]);
 			}
@@ -363,5 +697,5 @@ class CopyableBehavior extends ModelBehavior {
 
 		return true;
 	}
-	
+
 }
